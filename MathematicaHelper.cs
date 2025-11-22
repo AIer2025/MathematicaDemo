@@ -6,8 +6,8 @@ using System.IO;
 namespace MathematicaDemo
 {
     /// <summary>
-    /// Mathematica 辅助类 (修复版)
-    /// 解决了 Error 1002 图片生成问题，使用 Base64 传输二进制数据
+    /// Mathematica 辅助类 (文件桥接版)
+    /// 通过临时文件交换数据，彻底解决内存传输导致的文件损坏/文本化问题
     /// </summary>
     public class MathematicaHelper : IDisposable
     {
@@ -20,7 +20,6 @@ namespace MathematicaDemo
             {
                 if (string.IsNullOrEmpty(mathematicaPath))
                 {
-                    // 默认路径，请根据实际安装位置调整
                     mathematicaPath = @"C:\Program Files\Wolfram Research\Wolfram\14.3\MathKernel.exe";
                 }
 
@@ -28,183 +27,131 @@ namespace MathematicaDemo
                 
                 string[] args = { "-linkmode", "launch", "-linkname", $"\"{mathematicaPath}\"" };
                 _kernelLink = MathLinkFactory.CreateKernelLink(args);
-
-                // 丢弃初始 InputNamePacket
                 _kernelLink.WaitAndDiscardAnswer();
 
                 Console.WriteLine("Mathematica 内核启动成功！");
-
                 LoadCustomPackage();
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"初始化 Mathematica 内核失败: {ex.Message}", ex);
+                throw new InvalidOperationException($"初始化失败: {ex.Message}", ex);
             }
         }
 
         private void LoadCustomPackage()
         {
             if (_kernelLink == null) return;
-
             try
             {
                 string packagePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MathematicaFunctions.m");
-                
                 if (File.Exists(packagePath))
                 {
                     packagePath = packagePath.Replace("\\", "/");
-                    
-                    // 使用 EvaluateToOutputForm 安全加载包
                     string result = _kernelLink.EvaluateToOutputForm($"Get[\"{packagePath}\"]", 0);
-                    
-                    if (result.Contains("$Failed"))
-                    {
-                        Console.WriteLine($"严重警告: 函数包加载失败，Mathematica 返回: {result}");
-                    }
-                    else
-                    {
-                        Console.WriteLine("自定义函数包加载成功！");
-                    }
-                }
-                else
-                {
-                    Console.WriteLine($"警告: 未找到函数包文件: {packagePath}");
+                    if (result.Contains("$Failed")) Console.WriteLine($"严重警告: 包加载失败: {result}");
+                    else Console.WriteLine("自定义函数包加载成功！");
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"加载函数包时出错: {ex.Message}");
-            }
+            catch (Exception ex) { Console.WriteLine($"加载包出错: {ex.Message}"); }
         }
 
         // ============================================================
-        // 核心执行方法
+        // 基础执行方法
         // ============================================================
 
-        /// <summary>
-        /// 通用执行方法：返回字符串结果
-        /// </summary>
         public string ExecuteCommand(string command)
         {
-            if (_kernelLink == null)
-                throw new InvalidOperationException("内核未初始化");
-
-            try
-            {
-                // 0 表示不换行，返回标准 OutputForm 字符串
-                return _kernelLink.EvaluateToOutputForm(command, 0);
-            }
-            catch (MathLinkException ex)
-            {
-                throw new InvalidOperationException($"Mathematica 通信错误: {ex.Message}", ex);
-            }
+            if (_kernelLink == null) throw new InvalidOperationException("内核未初始化");
+            try { return _kernelLink.EvaluateToOutputForm(command, 0); }
+            catch (MathLinkException ex) { throw new InvalidOperationException($"通信错误: {ex.Message}", ex); }
         }
 
         public int ExecuteForInteger(string command)
         {
-            string resultStr = ExecuteCommand(command);
-            if (int.TryParse(resultStr, out int result))
-            {
-                return result;
-            }
-            else
-            {
-                throw new FormatException($"期望返回整数，但 Mathematica 返回了: '{resultStr}'");
-            }
+            string res = ExecuteCommand(command);
+            if (int.TryParse(res, out int val)) return val;
+            throw new FormatException($"期望整数，返回了: '{res}'");
         }
 
         public double ExecuteForDouble(string command)
         {
-            string resultStr = ExecuteCommand(command);
-            // 处理科学计数法 (1.2*^3 -> 1.2E3)
-            resultStr = resultStr.Replace("*^", "E");
-
-            if (double.TryParse(resultStr, out double result))
-            {
-                return result;
-            }
-            else
-            {
-                throw new FormatException($"期望返回浮点数，但 Mathematica 返回了: '{resultStr}'");
-            }
+            string res = ExecuteCommand(command).Replace("*^", "E");
+            if (double.TryParse(res, out double val)) return val;
+            throw new FormatException($"期望浮点数，返回了: '{res}'");
         }
 
-        public string ExecuteForString(string command)
-        {
-            return ExecuteCommand(command);
-        }
+        public string ExecuteForString(string command) => ExecuteCommand(command);
 
         public int[] ExecuteForIntArray(string command)
         {
             if (_kernelLink == null) throw new InvalidOperationException("内核未初始化");
-
-            try 
-            {
-                _kernelLink.Evaluate(command);
-                _kernelLink.WaitForAnswer();
-                return _kernelLink.GetInt32Array();
-            }
-            catch (MathLinkException)
-            {
-                _kernelLink.ClearError(); 
-                _kernelLink.NewPacket(); 
-                throw new InvalidOperationException("获取数组失败。请确保函数返回的是整数列表 (List)。");
-            }
+            _kernelLink.Evaluate(command);
+            _kernelLink.WaitForAnswer();
+            return _kernelLink.GetInt32Array();
         }
 
         // ============================================================
-        // 【关键修复】图像生成方法
+        // 【终极方案】图像生成方法 (File Bridge)
         // ============================================================
 
-        /// <summary>
-        /// 生成图像并返回二进制数据
-        /// 修复方案：使用 Base64 字符串传输，避免 Error 1002 数组深度错误
-        /// </summary>
         public byte[] ExecuteForImageBytes(string plotCommand, string format = "JPG")
         {
             if (_kernelLink == null) throw new InvalidOperationException("内核未初始化");
 
+            // 1. 生成唯一的临时文件路径 (例如 C:\Users\xxx\AppData\Local\Temp\tmp1234.tmp)
+            string tempFilePath = Path.GetTempFileName();
+            
             try
             {
-                // 【修复逻辑】
-                // 1. ExportByteArray 生成 ByteArray 对象
-                // 2. Base64String 将其转换为纯文本字符串
-                // 这样 C# 只需要读取 String，绝对安全
-                string command = $"Base64String[ExportByteArray[{plotCommand}, \"{format}\"]]";
-                
-                _kernelLink.Evaluate(command);
-                _kernelLink.WaitForAnswer();
-                
-                // 读取 Base64 字符串
-                string base64Result = _kernelLink.GetString();
+                // 2. 处理路径格式，Mathematica 需要双反斜杠
+                string mathPath = tempFilePath.Replace("\\", "\\\\");
 
-                // 在 C# 端解码为二进制
-                return Convert.FromBase64String(base64Result);
+                // 3. 构造 Export 命令：让 Mathematica 直接把图写到这个文件里
+                // Export["C:\\Temp\\tmp.jpg", Plot[...], "JPG"]
+                // 并在最后返回 "OK" 字符串以便确认
+                string command = $"Export[\"{mathPath}\", {plotCommand}, \"{format}\"]; \"OK\"";
+
+                // 4. 执行命令
+                string result = _kernelLink.EvaluateToOutputForm(command, 0);
+
+                // 5. 检查是否成功
+                if (!result.Contains("OK"))
+                {
+                    throw new Exception($"Mathematica 导出失败，返回: {result}");
+                }
+
+                // 6. C# 从硬盘读取这个真正的图片文件
+                if (File.Exists(tempFilePath) && new FileInfo(tempFilePath).Length > 0)
+                {
+                    return File.ReadAllBytes(tempFilePath);
+                }
+                else
+                {
+                    throw new Exception("临时文件未生成或为空。");
+                }
             }
-            catch (MathLinkException ex)
+            catch (Exception ex)
             {
-                _kernelLink.ClearError();
-                _kernelLink.NewPacket();
                 throw new InvalidOperationException($"图像生成失败: {ex.Message}", ex);
             }
-            catch (FormatException ex)
+            finally
             {
-                throw new InvalidOperationException($"图像数据解码失败 (Base64 格式错误): {ex.Message}", ex);
+                // 7. 清理现场：删除临时文件
+                try
+                {
+                    if (File.Exists(tempFilePath)) File.Delete(tempFilePath);
+                }
+                catch { /* 忽略删除失败，由系统自动清理 */ }
             }
         }
 
-        // ============================================================
         // 异步封装
-        // ============================================================
-        public async Task<string> ExecuteCommandAsync(string command) => await Task.Run(() => ExecuteCommand(command));
-        public async Task<int> ExecuteForIntegerAsync(string command) => await Task.Run(() => ExecuteForInteger(command));
-        public async Task<double> ExecuteForDoubleAsync(string command) => await Task.Run(() => ExecuteForDouble(command));
-        public async Task<string> ExecuteForStringAsync(string command) => await Task.Run(() => ExecuteForString(command));
-        public async Task<int[]> ExecuteForIntArrayAsync(string command) => await Task.Run(() => ExecuteForIntArray(command));
-        
-        // 异步图像生成
-        public async Task<byte[]> ExecuteForImageBytesAsync(string command, string format = "JPG") => 
-            await Task.Run(() => ExecuteForImageBytes(command, format));
+        public async Task<string> ExecuteCommandAsync(string cmd) => await Task.Run(() => ExecuteCommand(cmd));
+        public async Task<int> ExecuteForIntegerAsync(string cmd) => await Task.Run(() => ExecuteForInteger(cmd));
+        public async Task<double> ExecuteForDoubleAsync(string cmd) => await Task.Run(() => ExecuteForDouble(cmd));
+        public async Task<string> ExecuteForStringAsync(string cmd) => await Task.Run(() => ExecuteForString(cmd));
+        public async Task<int[]> ExecuteForIntArrayAsync(string cmd) => await Task.Run(() => ExecuteForIntArray(cmd));
+        public async Task<byte[]> ExecuteForImageBytesAsync(string cmd, string fmt="JPG") => await Task.Run(() => ExecuteForImageBytes(cmd, fmt));
 
         public void Dispose()
         {
@@ -214,24 +161,14 @@ namespace MathematicaDemo
 
         protected virtual void Dispose(bool disposing)
         {
-            if (!_disposed)
+            if (!_disposed && disposing && _kernelLink != null)
             {
-                if (disposing)
-                {
-                    if (_kernelLink != null)
-                    {
-                        _kernelLink.Close();
-                        _kernelLink = null;
-                        Console.WriteLine("Mathematica 内核已关闭");
-                    }
-                }
-                _disposed = true;
+                _kernelLink.Close();
+                _kernelLink = null;
             }
+            _disposed = true;
         }
 
-        ~MathematicaHelper()
-        {
-            Dispose(false);
-        }
+        ~MathematicaHelper() => Dispose(false);
     }
 }
