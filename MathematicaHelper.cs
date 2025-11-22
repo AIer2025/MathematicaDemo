@@ -1,47 +1,39 @@
 using Wolfram.NETLink;
 using System;
 using System.Threading.Tasks;
+using System.IO;
 
 namespace MathematicaDemo
 {
     /// <summary>
-    /// Mathematica 辅助类，封装常用操作
+    /// Mathematica 辅助类 (修复版)
+    /// 解决了 Error 1002 图片生成问题，使用 Base64 传输二进制数据
     /// </summary>
     public class MathematicaHelper : IDisposable
     {
         private IKernelLink? _kernelLink;
         private bool _disposed = false;
 
-        /// <summary>
-        /// 初始化 Mathematica 内核连接
-        /// </summary>
-        /// <param name="mathematicaPath">Mathematica 可执行文件路径（可选）</param>
         public void Initialize(string? mathematicaPath = null)
         {
             try
             {
-                // 如果未指定路径，使用默认路径
                 if (string.IsNullOrEmpty(mathematicaPath))
                 {
-                    // Windows 默认路径
+                    // 默认路径，请根据实际安装位置调整
                     mathematicaPath = @"C:\Program Files\Wolfram Research\Wolfram\14.3\MathKernel.exe";
-                    
-                    // 如果是 Mac 或 Linux，需要修改路径
-                    // mathematicaPath = "/Applications/Mathematica.app/Contents/MacOS/MathKernel";
                 }
 
                 Console.WriteLine("正在启动 Mathematica 内核...");
                 
-                // 创建内核链接
                 string[] args = { "-linkmode", "launch", "-linkname", $"\"{mathematicaPath}\"" };
                 _kernelLink = MathLinkFactory.CreateKernelLink(args);
 
-                // 丢弃初始输入提示符
+                // 丢弃初始 InputNamePacket
                 _kernelLink.WaitAndDiscardAnswer();
 
                 Console.WriteLine("Mathematica 内核启动成功！");
 
-                // 加载自定义函数包
                 LoadCustomPackage();
             }
             catch (Exception ex)
@@ -50,23 +42,29 @@ namespace MathematicaDemo
             }
         }
 
-        /// <summary>
-        /// 加载自定义函数包
-        /// </summary>
         private void LoadCustomPackage()
         {
+            if (_kernelLink == null) return;
+
             try
             {
                 string packagePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MathematicaFunctions.m");
                 
                 if (File.Exists(packagePath))
                 {
-                    // 将反斜杠转换为正斜杠（Mathematica 格式）
                     packagePath = packagePath.Replace("\\", "/");
                     
-                    string command = $"Get[\"{packagePath}\"]";
-                    ExecuteCommand(command);
-                    Console.WriteLine("自定义函数包加载成功！");
+                    // 使用 EvaluateToOutputForm 安全加载包
+                    string result = _kernelLink.EvaluateToOutputForm($"Get[\"{packagePath}\"]", 0);
+                    
+                    if (result.Contains("$Failed"))
+                    {
+                        Console.WriteLine($"严重警告: 函数包加载失败，Mathematica 返回: {result}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("自定义函数包加载成功！");
+                    }
                 }
                 else
                 {
@@ -79,155 +77,135 @@ namespace MathematicaDemo
             }
         }
 
+        // ============================================================
+        // 核心执行方法
+        // ============================================================
+
         /// <summary>
-        /// 执行 Mathematica 命令（同步）
+        /// 通用执行方法：返回字符串结果
         /// </summary>
         public string ExecuteCommand(string command)
         {
             if (_kernelLink == null)
-                throw new InvalidOperationException("Mathematica 内核未初始化");
+                throw new InvalidOperationException("内核未初始化");
 
             try
             {
+                // 0 表示不换行，返回标准 OutputForm 字符串
+                return _kernelLink.EvaluateToOutputForm(command, 0);
+            }
+            catch (MathLinkException ex)
+            {
+                throw new InvalidOperationException($"Mathematica 通信错误: {ex.Message}", ex);
+            }
+        }
+
+        public int ExecuteForInteger(string command)
+        {
+            string resultStr = ExecuteCommand(command);
+            if (int.TryParse(resultStr, out int result))
+            {
+                return result;
+            }
+            else
+            {
+                throw new FormatException($"期望返回整数，但 Mathematica 返回了: '{resultStr}'");
+            }
+        }
+
+        public double ExecuteForDouble(string command)
+        {
+            string resultStr = ExecuteCommand(command);
+            // 处理科学计数法 (1.2*^3 -> 1.2E3)
+            resultStr = resultStr.Replace("*^", "E");
+
+            if (double.TryParse(resultStr, out double result))
+            {
+                return result;
+            }
+            else
+            {
+                throw new FormatException($"期望返回浮点数，但 Mathematica 返回了: '{resultStr}'");
+            }
+        }
+
+        public string ExecuteForString(string command)
+        {
+            return ExecuteCommand(command);
+        }
+
+        public int[] ExecuteForIntArray(string command)
+        {
+            if (_kernelLink == null) throw new InvalidOperationException("内核未初始化");
+
+            try 
+            {
+                _kernelLink.Evaluate(command);
+                _kernelLink.WaitForAnswer();
+                return _kernelLink.GetInt32Array();
+            }
+            catch (MathLinkException)
+            {
+                _kernelLink.ClearError(); 
+                _kernelLink.NewPacket(); 
+                throw new InvalidOperationException("获取数组失败。请确保函数返回的是整数列表 (List)。");
+            }
+        }
+
+        // ============================================================
+        // 【关键修复】图像生成方法
+        // ============================================================
+
+        /// <summary>
+        /// 生成图像并返回二进制数据
+        /// 修复方案：使用 Base64 字符串传输，避免 Error 1002 数组深度错误
+        /// </summary>
+        public byte[] ExecuteForImageBytes(string plotCommand, string format = "JPG")
+        {
+            if (_kernelLink == null) throw new InvalidOperationException("内核未初始化");
+
+            try
+            {
+                // 【修复逻辑】
+                // 1. ExportByteArray 生成 ByteArray 对象
+                // 2. Base64String 将其转换为纯文本字符串
+                // 这样 C# 只需要读取 String，绝对安全
+                string command = $"Base64String[ExportByteArray[{plotCommand}, \"{format}\"]]";
+                
                 _kernelLink.Evaluate(command);
                 _kernelLink.WaitForAnswer();
                 
-                // 使用 ToString 方法将结果转换为字符串
-                _kernelLink.Evaluate("ToString[%]");
-                _kernelLink.WaitForAnswer();
-                return _kernelLink.GetString();
+                // 读取 Base64 字符串
+                string base64Result = _kernelLink.GetString();
+
+                // 在 C# 端解码为二进制
+                return Convert.FromBase64String(base64Result);
             }
             catch (MathLinkException ex)
             {
-                throw new InvalidOperationException($"执行命令失败: {ex.Message}", ex);
+                _kernelLink.ClearError();
+                _kernelLink.NewPacket();
+                throw new InvalidOperationException($"图像生成失败: {ex.Message}", ex);
             }
-        }
-
-        /// <summary>
-        /// 执行命令并直接返回字符串结果（不经过ToString转换）
-        /// </summary>
-        private string ExecuteCommandRaw(string command)
-        {
-            if (_kernelLink == null)
-                throw new InvalidOperationException("Mathematica 内核未初始化");
-
-            _kernelLink.Evaluate(command);
-            _kernelLink.WaitForAnswer();
-            return _kernelLink.GetString();
-        }
-
-        /// <summary>
-        /// 执行 Mathematica 命令并返回整数（同步）
-        /// </summary>
-        public int ExecuteForInteger(string command)
-        {
-            if (_kernelLink == null)
-                throw new InvalidOperationException("Mathematica 内核未初始化");
-
-            _kernelLink.Evaluate(command);
-            _kernelLink.WaitForAnswer();
-            return _kernelLink.GetInteger();
-        }
-
-        /// <summary>
-        /// 执行 Mathematica 命令并返回浮点数（同步）
-        /// </summary>
-        public double ExecuteForDouble(string command)
-        {
-            if (_kernelLink == null)
-                throw new InvalidOperationException("Mathematica 内核未初始化");
-
-            _kernelLink.Evaluate(command);
-            _kernelLink.WaitForAnswer();
-            return _kernelLink.GetDouble();
-        }
-
-        /// <summary>
-        /// 执行 Mathematica 命令并返回字符串（同步）
-        /// </summary>
-        public string ExecuteForString(string command)
-        {
-            if (_kernelLink == null)
-                throw new InvalidOperationException("Mathematica 内核未初始化");
-
-            try
+            catch (FormatException ex)
             {
-                _kernelLink.Evaluate(command);
-                _kernelLink.WaitForAnswer();
-                return _kernelLink.GetString();
-            }
-            catch (MathLinkException ex)
-            {
-                // 如果 GetString 失败，尝试使用 ToString 转换
-                try
-                {
-                    _kernelLink.Evaluate("ToString[%]");
-                    _kernelLink.WaitForAnswer();
-                    return _kernelLink.GetString();
-                }
-                catch
-                {
-                    throw new InvalidOperationException($"执行命令失败: {ex.Message}", ex);
-                }
+                throw new InvalidOperationException($"图像数据解码失败 (Base64 格式错误): {ex.Message}", ex);
             }
         }
 
-        /// <summary>
-        /// 执行 Mathematica 命令并返回数组（同步）
-        /// </summary>
-        public int[] ExecuteForIntArray(string command)
-        {
-            if (_kernelLink == null)
-                throw new InvalidOperationException("Mathematica 内核未初始化");
+        // ============================================================
+        // 异步封装
+        // ============================================================
+        public async Task<string> ExecuteCommandAsync(string command) => await Task.Run(() => ExecuteCommand(command));
+        public async Task<int> ExecuteForIntegerAsync(string command) => await Task.Run(() => ExecuteForInteger(command));
+        public async Task<double> ExecuteForDoubleAsync(string command) => await Task.Run(() => ExecuteForDouble(command));
+        public async Task<string> ExecuteForStringAsync(string command) => await Task.Run(() => ExecuteForString(command));
+        public async Task<int[]> ExecuteForIntArrayAsync(string command) => await Task.Run(() => ExecuteForIntArray(command));
+        
+        // 异步图像生成
+        public async Task<byte[]> ExecuteForImageBytesAsync(string command, string format = "JPG") => 
+            await Task.Run(() => ExecuteForImageBytes(command, format));
 
-            _kernelLink.Evaluate(command);
-            _kernelLink.WaitForAnswer();
-            return _kernelLink.GetInt32Array();
-        }
-
-        /// <summary>
-        /// 执行 Mathematica 命令（异步）
-        /// </summary>
-        public async Task<string> ExecuteCommandAsync(string command)
-        {
-            return await Task.Run(() => ExecuteCommand(command));
-        }
-
-        /// <summary>
-        /// 执行 Mathematica 命令并返回整数（异步）
-        /// </summary>
-        public async Task<int> ExecuteForIntegerAsync(string command)
-        {
-            return await Task.Run(() => ExecuteForInteger(command));
-        }
-
-        /// <summary>
-        /// 执行 Mathematica 命令并返回浮点数（异步）
-        /// </summary>
-        public async Task<double> ExecuteForDoubleAsync(string command)
-        {
-            return await Task.Run(() => ExecuteForDouble(command));
-        }
-
-        /// <summary>
-        /// 执行 Mathematica 命令并返回字符串（异步）
-        /// </summary>
-        public async Task<string> ExecuteForStringAsync(string command)
-        {
-            return await Task.Run(() => ExecuteForString(command));
-        }
-
-        /// <summary>
-        /// 执行 Mathematica 命令并返回数组（异步）
-        /// </summary>
-        public async Task<int[]> ExecuteForIntArrayAsync(string command)
-        {
-            return await Task.Run(() => ExecuteForIntArray(command));
-        }
-
-        /// <summary>
-        /// 清理资源
-        /// </summary>
         public void Dispose()
         {
             Dispose(true);
