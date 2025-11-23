@@ -398,3 +398,4 @@ Values below threshold: 3
 ## 联系方式
 
 如有问题或建议，请提交 Issue 或 Pull Request。
+邮件地址 stone.pltkib@gmail.com
