@@ -10,7 +10,7 @@ namespace MathematicaDemo
         static async Task Main(string[] args)
         {
             Console.WriteLine("=".PadRight(80, '='));
-            Console.WriteLine("C# .NET 8.0 调用 Mathematica 14.3 - 完整功能演示 (1-17)");
+            Console.WriteLine("C# .NET 8.0 调用 Mathematica 14.3 - 完整功能演示 (1-18)");
             Console.WriteLine("=".PadRight(80, '='));
             Console.WriteLine();
 
@@ -286,6 +286,45 @@ namespace MathematicaDemo
                     catch (Exception ex)
                     {
                         Console.WriteLine($"图像生成失败: {ex.Message}");
+                    }
+                    Console.WriteLine();
+
+                    // ====================================================================
+                    // 示例 18: 复杂嵌套函数调用 - ComplexFuncCall (新增)
+                    // ====================================================================
+                    Console.WriteLine("【示例 18】复杂嵌套函数调用 - ComplexFuncCall");
+                    Console.WriteLine("-".PadRight(80, '-'));
+                    Console.WriteLine("说明: ComplexFuncCall 内部会调用5个辅助函数:");
+                    Console.WriteLine("  1. ValidateData - 验证和清洗数据");
+                    Console.WriteLine("  2. CalculateBasicStats - 计算基本统计量");
+                    Console.WriteLine("  3. CalculateAdvancedStats - 计算高级统计量");
+                    Console.WriteLine("  4. FilterByThreshold - 按阈值过滤数据");
+                    Console.WriteLine("  5. GenerateReport - 生成综合报告");
+                    Console.WriteLine();
+
+                    // 准备测试数据（包含一些异常值和负数）
+                    double[] complexData = { 10.5, 25.3, -5.2, 42.8, 18.7, 0, 33.1, 
+                                            51.4, 29.6, 38.2, 15.9, 44.3, 22.1 };
+                    string complexDataStr = "{" + string.Join(", ", complexData) + "}";
+                    double dataThreshold = 30.0;
+
+                    Console.WriteLine($"输入数据: {complexDataStr}");
+                    Console.WriteLine($"阈值参数: {dataThreshold}");
+                    Console.WriteLine();
+
+                    try
+                    {
+                        Console.WriteLine("正在执行复杂的嵌套函数调用...");
+                        string analysisReport = math.ExecuteForString(
+                            $"MathematicaFunctions`ComplexFuncCall[{complexDataStr}, {dataThreshold}]");
+                        
+                        Console.WriteLine("执行成功！分析报告如下:");
+                        Console.WriteLine();
+                        Console.WriteLine(analysisReport);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"复杂函数调用失败: {ex.Message}");
                     }
                     Console.WriteLine();
 

@@ -20,6 +20,9 @@ ComplexCalculation::usage = "ComplexCalculation[x, y, z] performs a math calcula
 (* New function for plotting demo *)
 GenerateSamplePlot::usage = "GenerateSamplePlot[] returns a 3D plot object.";
 
+(* Complex nested function call demo *)
+ComplexFuncCall::usage = "ComplexFuncCall[dataList, threshold] performs comprehensive analysis with nested function calls.";
+
 Begin["`Private`"]
 
 (* Basic Math *)
@@ -81,6 +84,100 @@ GenerateSamplePlot[] :=
    PlotStyle -> Directive[Orange, Specularity[White, 20]], 
    Mesh -> None, 
    ColorFunction -> "SunsetColors"]
+
+(* ============================================ *)
+(* Complex Nested Function Call - Helper Functions *)
+(* ============================================ *)
+
+(* Helper 1: Validate and clean data *)
+ValidateData[dataList_List] := 
+  Module[{cleaned},
+    (* Remove any non-numeric values and keep only positive numbers *)
+    cleaned = Select[dataList, NumericQ[#] && # > 0 &];
+    cleaned
+  ]
+
+(* Helper 2: Calculate basic statistics *)
+CalculateBasicStats[dataList_List] := 
+  Module[{sum, mean, median, max, min},
+    sum = Total[dataList];
+    mean = Mean[dataList];
+    median = Median[dataList];
+    max = Max[dataList];
+    min = Min[dataList];
+    <|"sum" -> sum, "mean" -> mean, "median" -> median, 
+      "max" -> max, "min" -> min|>
+  ]
+
+(* Helper 3: Calculate advanced statistics *)
+CalculateAdvancedStats[dataList_List] := 
+  Module[{variance, stdDev, range, q1, q3},
+    variance = Variance[dataList];
+    stdDev = StandardDeviation[dataList];
+    range = Max[dataList] - Min[dataList];
+    q1 = Quantile[dataList, 0.25];
+    q3 = Quantile[dataList, 0.75];
+    <|"variance" -> variance, "stdDev" -> stdDev, 
+      "range" -> range, "Q1" -> q1, "Q3" -> q3|>
+  ]
+
+(* Helper 4: Filter data by threshold *)
+FilterByThreshold[dataList_List, threshold_?NumericQ] := 
+  Module[{aboveThreshold, belowThreshold},
+    aboveThreshold = Select[dataList, # >= threshold &];
+    belowThreshold = Select[dataList, # < threshold &];
+    <|"above" -> aboveThreshold, "below" -> belowThreshold, 
+      "aboveCount" -> Length[aboveThreshold], 
+      "belowCount" -> Length[belowThreshold]|>
+  ]
+
+(* Helper 5: Generate summary report *)
+GenerateReport[basicStats_, advancedStats_, filterResults_, originalCount_, cleanedCount_] := 
+  Module[{report},
+    report = "=== Data Analysis Report ===\n";
+    report = report <> "Original data count: " <> ToString[originalCount] <> "\n";
+    report = report <> "Cleaned data count: " <> ToString[cleanedCount] <> "\n";
+    report = report <> "\n--- Basic Statistics ---\n";
+    report = report <> "Sum: " <> ToString[N[basicStats["sum"], 4]] <> "\n";
+    report = report <> "Mean: " <> ToString[N[basicStats["mean"], 4]] <> "\n";
+    report = report <> "Median: " <> ToString[N[basicStats["median"], 4]] <> "\n";
+    report = report <> "Max: " <> ToString[N[basicStats["max"], 4]] <> "\n";
+    report = report <> "Min: " <> ToString[N[basicStats["min"], 4]] <> "\n";
+    report = report <> "\n--- Advanced Statistics ---\n";
+    report = report <> "Variance: " <> ToString[N[advancedStats["variance"], 4]] <> "\n";
+    report = report <> "Std Dev: " <> ToString[N[advancedStats["stdDev"], 4]] <> "\n";
+    report = report <> "Range: " <> ToString[N[advancedStats["range"], 4]] <> "\n";
+    report = report <> "Q1 (25%): " <> ToString[N[advancedStats["Q1"], 4]] <> "\n";
+    report = report <> "Q3 (75%): " <> ToString[N[advancedStats["Q3"], 4]] <> "\n";
+    report = report <> "\n--- Threshold Analysis ---\n";
+    report = report <> "Values above threshold: " <> ToString[filterResults["aboveCount"]] <> "\n";
+    report = report <> "Values below threshold: " <> ToString[filterResults["belowCount"]] <> "\n";
+    report = report <> "===========================";
+    report
+  ]
+
+(* Main Complex Function: Calls multiple helper functions *)
+ComplexFuncCall[dataList_List, threshold_?NumericQ] := 
+  Module[{validData, basicStats, advancedStats, filterResults, report},
+    (* Step 1: Validate and clean the data *)
+    validData = ValidateData[dataList];
+    
+    (* Step 2: Calculate basic statistics on cleaned data *)
+    basicStats = CalculateBasicStats[validData];
+    
+    (* Step 3: Calculate advanced statistics *)
+    advancedStats = CalculateAdvancedStats[validData];
+    
+    (* Step 4: Filter data by threshold *)
+    filterResults = FilterByThreshold[validData, threshold];
+    
+    (* Step 5: Generate comprehensive report *)
+    report = GenerateReport[basicStats, advancedStats, filterResults, 
+                           Length[dataList], Length[validData]];
+    
+    (* Return the report *)
+    report
+  ]
 
 End[]
 
